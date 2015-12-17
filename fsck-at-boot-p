@@ -1,0 +1,148 @@
+#! /usr/bin/perl
+#
+# Check all ext2/3/4 filesystems mentioned in fstab and return success
+# if any of them will be routinely fsck'd if booted now.  Also return
+# success if any devices in /etc/fstab are missing or the filesystem
+# type is wrong.
+#
+# Copyright 2013-2015 by
+# Kjetil Torgrim Homme <kjetilho@redpill-linpro.com>
+# version 1.1
+#
+# This script is released under the GNU Public License.
+
+use warnings;
+use strict;
+use Time::Local;
+use Getopt::Long;
+
+my $verbose;
+
+GetOptions('verbose|v' => \$verbose)
+    or die "Usage: $0 [--verbose]\n";
+
+my %tunefs = ( ext2 => '/sbin/tune2fs',
+               ext3 => '/sbin/tune2fs',
+               ext4 => '/sbin/tune2fs',
+);
+$tunefs{ext4} = '/sbin/tune4fs' if -x '/sbin/tune4fs';
+my $lsblk = '/bin/lsblk' if -x '/bin/lsblk';
+
+# Known filesystems
+my %check = (%tunefs, ( xfs => 'xfs_info' ));
+
+my $retval = 1; # "success" means fsck will run (or other problems)
+
+if (-r '/forcefsck') {
+    print "/forcefsck exists, all filesystems will be fsck'd\n";
+    $retval = 0;
+}
+
+my %devices;
+
+open(my $fstab, "/etc/fstab") or die "/etc/fstab: $!\n";
+while (<$fstab>) {
+    next if /^\s*#/ or /^\s*$/;
+    s/\s+#.*//;
+    my ($dev, $mnt, $fs, $opts, $fs_freq, $fs_passno) = split(/\s+/);
+    if (! defined $fs_passno || $fs_passno eq "") {
+        print STDERR "/etc/fstab:$.:Too few columns: $_";
+        next;
+    }
+    if ($dev =~ /^UUID|LABEL/) {
+        chomp($dev = `/sbin/findfs $dev`);
+        unless ($dev) {
+            $retval = 0;
+            next;
+        }
+    }
+    next if $opts =~ /\bnoauto\b/;
+    if ($opts =~ /\bloop\b/ || $fs eq 'swap') {
+        unless (-e $dev) {
+            print STDERR "/etc/fstab:$.:$dev: No such file\n";
+            $retval = 0;
+        }
+    } elsif ($dev =~ m:^/: && ! -b $dev) {
+        print STDERR "/etc/fstab:$.:$dev: No such block device\n";
+        $retval = 0;
+        next;
+    }
+
+    next unless exists $check{$fs};
+    next if $fs_passno == 0;
+
+    if ($lsblk) {
+        chomp(my $reported = `$lsblk -no FSTYPE $dev`);
+        if ($reported ne '') {
+            $fs = $reported if $fs eq 'auto';
+            if ($reported ne $fs) {
+                print STDERR "/etc/fstab:$!:$dev listed as '$fs' but is '$reported'\n";
+                $retval = 0;
+                next;
+            }
+        }
+    }
+    $devices{$dev} = { mnt => $mnt, fs => $fs };
+}
+
+for my $dev (sort keys %devices) {
+    my $prog = $tunefs{$devices{$dev}->{fs}};
+    my $fstype = $devices{$dev}->{fs};
+    if (defined $tunefs{$fstype}) {
+        $retval = 0 if check_tunefs($tunefs{$fstype}, $dev);
+    } else {
+        my $output = `$check{$fstype} $dev`;
+        $retval = 0 if $? != 0;
+    }
+}
+
+exit($retval);
+
+sub check_tunefs {
+    my ($prog, $dev) = @_;
+
+    my $mon = 0;
+    my %monthnum;
+    map { $monthnum{$_} = $mon++ }
+    qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
+
+    open(my $tune, "-|", $prog, "-l", $dev)
+        or die "$prog: $!\n";
+    my ($next_check, $check_interval, $mount_count, $maximum_mount_count);
+    while (<$tune>) {
+        # Next check after:         Tue Oct  8 15:56:04 2013
+        if (/^Next check after:\s*\S+\s+(\S+)\s+(\d+)\s+(\d+):(\d+):(\d+)\s+(\d+)/) {
+            $next_check = timelocal($5, $4, $3, $2, $monthnum{$1}, $6);
+        } elsif (/^Check interval:\s+(\d+)/) {
+            $check_interval = $1;
+        } elsif (/^Mount count:\s+(\d+)/) {
+            $mount_count = $1;
+        } elsif (/^Maximum mount count:\s+(-?\d+)/) {
+            $maximum_mount_count = $1;
+        }
+    }
+    close($tune);
+    my $ask = 0;
+    if ($maximum_mount_count >= 1 && $mount_count >= $maximum_mount_count) {
+        print "$dev: maximum mount count will be reached ($mount_count/$maximum_mount_count)\n";
+        ++$ask;
+    }
+    unless ($check_interval) {
+        print "$dev: filesystem check interval disabled\n" if $verbose;
+        return 0;
+    }
+    my $seconds_until = $next_check - time();
+    if ($seconds_until < 0) {
+        printf("%s: time between filesystem checks has been exceeded (%dd%dh)\n",
+               $dev, -$seconds_until/86400, (-$seconds_until % 86400)/3600);
+        ++$ask;
+    } elsif ($seconds_until < 3600) {
+        printf("%s: time between filesystem checks will be exceeded in %d minutes\n",
+               $dev, $seconds_until / 60);
+        ++$ask;
+    } elsif ($verbose) {
+        printf("%s: time between filesystem checks will be exceeded in %dd%dh\n",
+               $dev, $seconds_until/86400, ($seconds_until % 86400)/3600);
+    }
+    return $ask;
+}

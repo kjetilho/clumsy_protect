@@ -1,0 +1,111 @@
+#! /bin/bash
+
+usage() {
+    cat <<EOF  >&2
+Usage: clumsy_protect [--molly-guard] REAL-COMMAND
+
+Do sanity checking relevant for a reboot before running REAL-COMMAND.
+
+If REAL-COMMAND is 'molly-guard', exit with success instead of running
+REAL-COMMAND if everything is OK.
+
+EOF
+    exit 64
+}
+
+abort() {
+    echo "You can override clumsy_protect by running /sbin/$cmd directly"
+    exit 1
+}
+
+check_initrd() {
+    local initrd="$1"
+    
+    if [ -e "$initrd" ]; then
+        if file "$initrd" | grep -q "cpio archive"
+        then
+            :
+        elif ! gzip --test "$initrd"
+        then
+            echo "Corrupt initrd, aborting!"
+            abort
+        fi
+    else
+        if [ "$initrd" != "" ]; then
+            echo "Missing initrd file \"$initrd\", aborting."
+            abort
+        fi
+    fi
+}
+
+## Main script starts here
+
+case $1 in
+    --molly-guard) mollyguard=true; shift ;;
+esac
+case $1 in
+    ""|-*) usage ;;
+esac
+
+cmd="$1"
+shift
+
+# RedHat specific.  Start this in the background early, since it can
+# take some time to run.
+
+if [ /var/log/yum.log -nt /var/log/prelink/prelink.log ]
+then
+    /etc/cron.daily/prelink &
+    prelink=$!
+fi
+
+if type fsck-at-boot-p >/dev/null 2>&1
+then
+    if fsck-at-boot-p
+    then
+        read -p "Are you sure you want to $cmd now? " yesno
+        case $yesno in
+            y|Y|yes) : ;;
+            *)       echo "aborting."; exit 1 ;;
+        esac
+    fi
+fi
+
+
+# grubby is only available on RedHat, unfortunately
+if [ -x /sbin/grubby ]
+then
+    initrd=$(/sbin/grubby --info=DEFAULT 2>/dev/null | awk -F= '/^initrd/ {print $2}'; exit ${PIPESTATUS[0]})
+    if [ $? = 0 ]
+    then
+        check_initrd "$initrd"
+    fi
+elif [ -f /boot/grub/grub.cfg ]
+then
+    if grep -q " /boot " /proc/mounts
+    then
+        prefix=/boot
+    fi
+    for file in $(awk -v prefix=$prefix '$1 == "initrd" {print prefix,$2}' /boot/grub/grub.cfg)
+    do
+        check_initrd "$file"
+    done
+fi
+
+echo "Running $cmd on $HOSTNAME in 2 seconds!"
+sleep 2 || exit 1
+
+if [ "$prelink" ]
+then
+    echo -n "Packages has been upgraded recently, running prelink, please wait... "
+    wait "$prelink"
+    echo "done."
+fi
+
+if [ "$mollyguard" ]
+then
+    # all systems are go, exit cleanly
+    exit 0
+fi
+
+exec "$cmd" "$@"
