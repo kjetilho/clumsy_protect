@@ -6,8 +6,9 @@ Usage: clumsy_protect [--molly-guard] REAL-COMMAND
 
 Do sanity checking relevant for a reboot before running REAL-COMMAND.
 
-If REAL-COMMAND is 'molly-guard', exit with success instead of running
-REAL-COMMAND if everything is OK.
+Options:
+  --molly-guard   exit with success instead of running REAL-COMMAND if
+                  everything is OK.
 
 EOF
     exit 64
@@ -53,7 +54,7 @@ shift
 # RedHat specific.  Start this in the background early, since it can
 # take some time to run.
 
-if [ /var/log/yum.log -nt /var/log/prelink/prelink.log ]
+if [ -x /etc/cron.daily/prelink -a /var/log/yum.log -nt /var/log/prelink/prelink.log ]
 then
     /etc/cron.daily/prelink &
     prelink=$!
