@@ -9,7 +9,7 @@ all:
 
 install:
 	$(INSTALL) -m 755 fsck-at-boot-p $(PREFIX)/sbin/fsck-at-boot-p
-	$(INSTALL) -m 755 clumsy_protect $(PREFIX)/sbin/clumsy_protect
+	$(INSTALL) -m 755 clumsy_protect $(PREFIX)/bin/clumsy_protect
 
 shell: install
 	$(INSTALL) -m 755 profile.sh /etc/profile.d/clumsy-protect.sh
