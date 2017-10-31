@@ -87,7 +87,7 @@ then
     then
         prefix=/boot
     fi
-    for file in $(awk -v prefix=$prefix '$1 == "initrd" {print prefix,$2}' /boot/grub/grub.cfg)
+    for file in $(awk -v prefix=$prefix '$1 == "initrd" {print prefix $2}' /boot/grub/grub.cfg)
     do
         check_initrd "$file"
     done
